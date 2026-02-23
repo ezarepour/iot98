@@ -1,0 +1,941 @@
+openapi: 3.0.3
+info:
+  title: Kidk API
+  version: 0.1.0
+  description: >
+    Initial API contract for Kidk mobile platform.
+    Includes authentication, child management, fever monitoring,
+    jaundice assessment, consultation, growth and vaccination.
+servers:
+  - url: https://api.kidk.example.com/v1
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/request-otp:
+    post:
+      tags: [Auth]
+      summary: Request OTP for signup/login/password reset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OtpRequestInput'
+      responses:
+        '202':
+          description: OTP scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Sign up parent user with verified OTP
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupInput'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with mobile and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change current user password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [oldPassword, newPassword]
+              properties:
+                oldPassword:
+                  type: string
+                newPassword:
+                  type: string
+      responses:
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /children:
+    get:
+      tags: [Children]
+      summary: List children available to current user
+      responses:
+        '200':
+          description: Children list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Child'
+    post:
+      tags: [Children]
+      summary: Create child profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChildCreateInput'
+      responses:
+        '201':
+          description: Child created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Child'
+
+  /children/{childId}:
+    patch:
+      tags: [Children]
+      summary: Update child profile
+      parameters:
+        - $ref: '#/components/parameters/ChildId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChildUpdateInput'
+      responses:
+        '200':
+          description: Child updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Child'
+
+  /fever/sessions:
+    post:
+      tags: [Fever]
+      summary: Start fever monitoring session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [childId, source]
+              properties:
+                childId:
+                  type: string
+                  format: uuid
+                source:
+                  type: string
+                  enum: [local, remote]
+                deviceSerial:
+                  type: string
+      responses:
+        '201':
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeverSession'
+
+  /fever/sessions/{sessionId}/samples:
+    post:
+      tags: [Fever]
+      summary: Push fever sample from app/device
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeverSampleInput'
+      responses:
+        '201':
+          description: Sample accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /fever/sessions/{sessionId}/events:
+    post:
+      tags: [Fever]
+      summary: Register treatment event (sponge/medicine)
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeverEventInput'
+      responses:
+        '201':
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /fever/sessions/{sessionId}/stop:
+    post:
+      tags: [Fever]
+      summary: Stop fever session and attach disease label
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [diseaseLabel]
+              properties:
+                diseaseLabel:
+                  type: string
+      responses:
+        '200':
+          description: Session stopped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeverSession'
+
+  /fever/history:
+    get:
+      tags: [Fever]
+      summary: Query fever history by child/disease/date
+      parameters:
+        - in: query
+          name: childId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: diseaseLabel
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Fever sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FeverSession'
+
+  /jaundice/tests:
+    post:
+      tags: [Jaundice]
+      summary: Create a new jaundice test
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [childId]
+              properties:
+                childId:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Test created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JaundiceTest'
+    get:
+      tags: [Jaundice]
+      summary: List jaundice tests for child
+      parameters:
+        - in: query
+          name: childId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Test list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/JaundiceTest'
+
+  /jaundice/tests/{testId}/images:
+    post:
+      tags: [Jaundice]
+      summary: Upload metadata for one jaundice image
+      parameters:
+        - $ref: '#/components/parameters/TestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JaundiceImageInput'
+      responses:
+        '201':
+          description: Image metadata stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /jaundice/tests/{testId}/submit:
+    post:
+      tags: [Jaundice]
+      summary: Submit all images for AI analysis
+      parameters:
+        - $ref: '#/components/parameters/TestId'
+      responses:
+        '202':
+          description: Analysis started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /consultations/doctors:
+    get:
+      tags: [Consultation]
+      summary: List available doctors
+      parameters:
+        - in: query
+          name: specialty
+          schema:
+            type: string
+        - in: query
+          name: maxFee
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Doctors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DoctorInfo'
+
+  /consultations:
+    post:
+      tags: [Consultation]
+      summary: Create consultation request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsultationCreateInput'
+      responses:
+        '201':
+          description: Consultation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+
+  /consultations/{consultationId}/pay:
+    post:
+      tags: [Consultation]
+      summary: Confirm payment for consultation
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentReference]
+              properties:
+                paymentReference:
+                  type: string
+      responses:
+        '200':
+          description: Payment confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+
+  /consultations/{consultationId}/messages:
+    get:
+      tags: [Consultation]
+      summary: List consultation chat messages
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatMessage'
+    post:
+      tags: [Consultation]
+      summary: Send a message in consultation chat
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatMessageInput'
+      responses:
+        '201':
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatMessage'
+
+  /remote-monitoring/children/{childId}/stream-token:
+    get:
+      tags: [RemoteMonitoring]
+      summary: Get WebSocket token for remote fever stream
+      parameters:
+        - $ref: '#/components/parameters/ChildId'
+      responses:
+        '200':
+          description: Stream token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wsUrl:
+                    type: string
+                  token:
+                    type: string
+
+  /vaccinations/children/{childId}/dashboard:
+    get:
+      tags: [Vaccination]
+      summary: Fetch vaccination dashboard summary
+      parameters:
+        - $ref: '#/components/parameters/ChildId'
+      responses:
+        '200':
+          description: Vaccination dashboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [up_to_date, delayed]
+                  nearestVaccine:
+                    type: string
+                  daysLeft:
+                    type: integer
+
+  /vaccinations/children/{childId}/records:
+    post:
+      tags: [Vaccination]
+      summary: Register vaccine injection
+      parameters:
+        - $ref: '#/components/parameters/ChildId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vaccineName, injectionDate]
+              properties:
+                vaccineName:
+                  type: string
+                injectionDate:
+                  type: string
+                  format: date
+                injectionSite:
+                  type: string
+                providerName:
+                  type: string
+                sideEffects:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: Record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericMessage'
+
+  /growth/children/{childId}/measurements:
+    get:
+      tags: [Growth]
+      summary: List growth measurements
+      parameters:
+        - $ref: '#/components/parameters/ChildId'
+      responses:
+        '200':
+          description: Measurements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GrowthMeasurement'
+    post:
+      tags: [Growth]
+      summary: Add growth measurement
+      parameters:
+        - $ref: '#/components/parameters/ChildId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrowthMeasurementInput'
+      responses:
+        '201':
+          description: Measurement created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrowthMeasurement'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ChildId:
+      in: path
+      name: childId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SessionId:
+      in: path
+      name: sessionId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TestId:
+      in: path
+      name: testId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConsultationId:
+      in: path
+      name: consultationId
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    GenericMessage:
+      type: object
+      properties:
+        message:
+          type: string
+
+    OtpRequestInput:
+      type: object
+      required: [mobile, purpose]
+      properties:
+        mobile:
+          type: string
+        purpose:
+          type: string
+          enum: [signup, login, password_reset]
+
+    SignupInput:
+      type: object
+      required: [mobile, otpCode, firstName, lastName, password]
+      properties:
+        mobile:
+          type: string
+        otpCode:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+        password:
+          type: string
+
+    LoginInput:
+      type: object
+      required: [mobile, password]
+      properties:
+        mobile:
+          type: string
+        password:
+          type: string
+
+    AuthTokens:
+      type: object
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        role:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+        mobile:
+          type: string
+
+    Child:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        firstName:
+          type: string
+        lastName:
+          type: string
+        gender:
+          type: string
+        birthDate:
+          type: string
+          format: date
+        birthWeightKg:
+          type: number
+        gestationalAgeWeeks:
+          type: integer
+        feverAlertThresholdC:
+          type: number
+
+    ChildCreateInput:
+      type: object
+      required: [firstName, lastName, gender, birthDate, feverAlertThresholdC]
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        gender:
+          type: string
+          enum: [male, female, other]
+        birthDate:
+          type: string
+          format: date
+        birthWeightKg:
+          type: number
+        gestationalAgeWeeks:
+          type: integer
+        feverAlertThresholdC:
+          type: number
+          enum: [38.0, 38.5, 39.0]
+
+    ChildUpdateInput:
+      type: object
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        birthWeightKg:
+          type: number
+        gestationalAgeWeeks:
+          type: integer
+        feverAlertThresholdC:
+          type: number
+
+    FeverSession:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        childId:
+          type: string
+          format: uuid
+        source:
+          type: string
+        diseaseLabel:
+          type: string
+        status:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+        peakTempC:
+          type: number
+
+    FeverSampleInput:
+      type: object
+      required: [measuredAt, tempC]
+      properties:
+        measuredAt:
+          type: string
+          format: date-time
+        tempC:
+          type: number
+          format: float
+        batteryPercent:
+          type: integer
+        bluetoothRssi:
+          type: integer
+        isWarmup:
+          type: boolean
+
+    FeverEventInput:
+      type: object
+      required: [eventType, eventAt]
+      properties:
+        eventType:
+          type: string
+          enum: [sponge, medicine]
+        medicineName:
+          type: string
+        medicineDose:
+          type: string
+        note:
+          type: string
+        eventAt:
+          type: string
+          format: date-time
+
+    JaundiceTest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        childId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        estimatedLevel:
+          type: number
+        recommendationText:
+          type: string
+
+    JaundiceImageInput:
+      type: object
+      required: [imageUrl, shotOrder, isFlash, roi]
+      properties:
+        imageUrl:
+          type: string
+        shotOrder:
+          type: integer
+          minimum: 1
+          maximum: 4
+        isFlash:
+          type: boolean
+        roi:
+          type: object
+          required: [x, y, width, height]
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+            width:
+              type: number
+            height:
+              type: number
+        capturedAt:
+          type: string
+          format: date-time
+
+    DoctorInfo:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        specialty:
+          type: string
+        rating:
+          type: number
+        consultationFee:
+          type: number
+
+    ConsultationCreateInput:
+      type: object
+      required: [childId, doctorId, feeAmount]
+      properties:
+        childId:
+          type: string
+          format: uuid
+        doctorId:
+          type: string
+          format: uuid
+        feeAmount:
+          type: number
+        summaryPayload:
+          type: object
+        messageText:
+          type: string
+
+    Consultation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        childId:
+          type: string
+          format: uuid
+        doctorId:
+          type: string
+          format: uuid
+        status:
+          type: string
+        paymentStatus:
+          type: string
+        feeAmount:
+          type: number
+
+    ChatMessageInput:
+      type: object
+      required: [messageType]
+      properties:
+        messageType:
+          type: string
+          enum: [text, audio, image]
+        contentText:
+          type: string
+        attachmentUrl:
+          type: string
+
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        consultationId:
+          type: string
+          format: uuid
+        senderId:
+          type: string
+          format: uuid
+        messageType:
+          type: string
+        contentText:
+          type: string
+        attachmentUrl:
+          type: string
+        sentAt:
+          type: string
+          format: date-time
+
+    GrowthMeasurementInput:
+      type: object
+      required: [measuredAt]
+      properties:
+        measuredAt:
+          type: string
+          format: date-time
+        weightKg:
+          type: number
+        heightCm:
+          type: number
+        headCircumferenceCm:
+          type: number
+        note:
+          type: string
+
+    GrowthMeasurement:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        childId:
+          type: string
+          format: uuid
+        measuredAt:
+          type: string
+          format: date-time
+        weightKg:
+          type: number
+        heightCm:
+          type: number
+        headCircumferenceCm:
+          type: number
+        note:
+          type: string
