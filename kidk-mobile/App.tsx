@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  FlatList,
   Modal,
   Pressable,
   SafeAreaView,
@@ -30,7 +29,7 @@ type UserAccount = {
   firstName: string;
   lastName: string;
   mobile: string;
-  password: string;
+  password?: string;
 };
 
 type ChildProfile = {
@@ -140,6 +139,7 @@ type RemoteMessage = {
 type AppSettings = {
   notificationsEnabled: boolean;
   notificationChannel: "push" | "sms";
+  apiBaseUrl: string;
 };
 
 type AppData = {
@@ -155,7 +155,8 @@ type AppData = {
   settings: AppSettings;
 };
 
-const STORAGE_KEY = "kidk-mobile-data-v1";
+const CACHE_STORAGE_KEY = "kidk-mobile-cache-v1";
+const AUTH_STORAGE_KEY = "kidk-mobile-auth-v1";
 
 const initialData: AppData = {
   users: [],
@@ -170,6 +171,7 @@ const initialData: AppData = {
   settings: {
     notificationsEnabled: true,
     notificationChannel: "push",
+    apiBaseUrl: "http://localhost:4000",
   },
 };
 
@@ -183,7 +185,7 @@ const vaccineCatalog = [
   { name: "۴ تا ۶ سالگی", ageMonths: 48 },
 ];
 
-const doctorDirectory = [
+const defaultDoctorDirectory = [
   { name: "دکتر احمدی", specialty: "اطفال", fee: 650000, rating: 4.8 },
   { name: "دکتر رضایی", specialty: "نوزادان", fee: 820000, rating: 4.9 },
   { name: "دکتر کریمی", specialty: "عفونی کودکان", fee: 740000, rating: 4.6 },
@@ -193,6 +195,91 @@ const Stack = createNativeStackNavigator();
 
 function uuid() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeBaseUrl(value?: string) {
+  if (!value) {
+    return initialData.settings.apiBaseUrl;
+  }
+  let normalized = value.trim();
+  if (!normalized) {
+    normalized = initialData.settings.apiBaseUrl;
+  }
+  if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+    normalized = `http://${normalized}`;
+  }
+  return normalized.replace(/\/+$/, "");
+}
+
+async function apiRequest<T = any>(
+  baseUrl: string,
+  route: string,
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  token?: string | null,
+  body?: any,
+): Promise<T> {
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${route}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const text = await response.text();
+  let payload: any = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (_e) {
+      payload = {};
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.message || `Request failed with status ${response.status}`);
+  }
+  return payload as T;
+}
+
+function toSyncPayload(data: AppData) {
+  return {
+    children: data.children,
+    feverSessions: data.feverSessions,
+    jaundiceTests: data.jaundiceTests,
+    vaccinationRecords: data.vaccinationRecords,
+    growthRecords: data.growthRecords,
+    consultations: data.consultations,
+    remoteMessages: data.remoteMessages,
+    settings: {
+      notificationsEnabled: data.settings.notificationsEnabled,
+      notificationChannel: data.settings.notificationChannel,
+      apiBaseUrl: normalizeBaseUrl(data.settings.apiBaseUrl),
+    },
+  };
+}
+
+function fromSyncPayload(payload: any, apiBaseUrl: string): AppData {
+  return {
+    ...initialData,
+    children: Array.isArray(payload?.children) ? payload.children : [],
+    feverSessions: Array.isArray(payload?.feverSessions) ? payload.feverSessions : [],
+    jaundiceTests: Array.isArray(payload?.jaundiceTests) ? payload.jaundiceTests : [],
+    vaccinationRecords: Array.isArray(payload?.vaccinationRecords) ? payload.vaccinationRecords : [],
+    growthRecords: Array.isArray(payload?.growthRecords) ? payload.growthRecords : [],
+    consultations: Array.isArray(payload?.consultations) ? payload.consultations : [],
+    remoteMessages: Array.isArray(payload?.remoteMessages) ? payload.remoteMessages : [],
+    settings: {
+      notificationsEnabled:
+        typeof payload?.settings?.notificationsEnabled === "boolean"
+          ? payload.settings.notificationsEnabled
+          : initialData.settings.notificationsEnabled,
+      notificationChannel:
+        payload?.settings?.notificationChannel === "sms" ? "sms" : "push",
+      apiBaseUrl: normalizeBaseUrl(apiBaseUrl),
+    },
+  };
 }
 
 function formatDateTime(iso: string) {
@@ -257,18 +344,79 @@ function recommendationForJaundice(level: number) {
 function App() {
   const [data, setData] = useState<AppData>(initialData);
   const [isLoading, setIsLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [syncReady, setSyncReady] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [doctors, setDoctors] = useState(defaultDoctorDirectory);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
-        const stored = await AsyncStorage.getItem(STORAGE_KEY);
-        if (stored && mounted) {
-          const parsed = JSON.parse(stored) as AppData;
-          setData({ ...initialData, ...parsed });
+        const cachedRaw = await AsyncStorage.getItem(CACHE_STORAGE_KEY);
+        if (cachedRaw && mounted) {
+          const parsed = JSON.parse(cachedRaw) as Partial<AppData>;
+          setData((prev) => ({
+            ...prev,
+            ...parsed,
+            settings: {
+              ...prev.settings,
+              ...(parsed.settings || {}),
+              apiBaseUrl: normalizeBaseUrl(parsed.settings?.apiBaseUrl || prev.settings.apiBaseUrl),
+            },
+          }));
+        }
+
+        const authRaw = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
+        if (authRaw && mounted) {
+          const parsedAuth = JSON.parse(authRaw) as { token?: string; apiBaseUrl?: string };
+          const restoredBaseUrl = normalizeBaseUrl(parsedAuth.apiBaseUrl);
+          setData((prev) => ({
+            ...prev,
+            settings: {
+              ...prev.settings,
+              apiBaseUrl: restoredBaseUrl,
+            },
+          }));
+          if (parsedAuth.token) {
+            const meResp = await apiRequest<{ user: UserAccount }>(
+              restoredBaseUrl,
+              "/auth/me",
+              "GET",
+              parsedAuth.token,
+            );
+            const syncResp = await apiRequest<{ payload: any }>(
+              restoredBaseUrl,
+              "/sync",
+              "GET",
+              parsedAuth.token,
+            );
+            const doctorsResp = await apiRequest<{ doctors: typeof defaultDoctorDirectory }>(
+              restoredBaseUrl,
+              "/doctors",
+              "GET",
+              parsedAuth.token,
+            );
+
+            if (mounted) {
+              const serverData = fromSyncPayload(syncResp.payload, restoredBaseUrl);
+              setData({
+                ...serverData,
+                users: [{ ...meResp.user }],
+                sessionMobile: meResp.user.mobile,
+              });
+              setCurrentUser(meResp.user);
+              setAuthToken(parsedAuth.token);
+              setDoctors(doctorsResp.doctors?.length ? doctorsResp.doctors : defaultDoctorDirectory);
+              setSyncReady(true);
+            }
+          }
         }
       } catch (e) {
-        console.error("Failed to load local data", e);
+        console.error("Failed to initialize from backend/cache", e);
+        await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
       } finally {
         if (mounted) {
           setIsLoading(false);
@@ -284,15 +432,75 @@ function App() {
     if (isLoading) {
       return;
     }
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch((e) =>
+    AsyncStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(data)).catch((e) =>
       console.error("Failed to persist local data", e),
     );
   }, [data, isLoading]);
 
-  const currentUser = useMemo(
-    () => data.users.find((u) => u.mobile === data.sessionMobile) ?? null,
-    [data.users, data.sessionMobile],
-  );
+  useEffect(() => {
+    if (!syncReady || !authToken || !currentUser || isLoading) {
+      return;
+    }
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+    }
+    syncTimerRef.current = setTimeout(() => {
+      apiRequest(
+        data.settings.apiBaseUrl,
+        "/sync",
+        "PUT",
+        authToken,
+        { payload: toSyncPayload(data) },
+      ).catch((e) => {
+        console.error("Sync failed", e);
+      });
+    }, 600);
+
+    return () => {
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+      }
+    };
+  }, [data, syncReady, authToken, currentUser, isLoading]);
+
+  const hydrateFromServer = async ({
+    token,
+    baseUrl,
+    user,
+  }: {
+    token: string;
+    baseUrl: string;
+    user?: UserAccount;
+  }) => {
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    const me = user
+      ? { user }
+      : await apiRequest<{ user: UserAccount }>(normalizedBase, "/auth/me", "GET", token);
+    const sync = await apiRequest<{ payload: any }>(normalizedBase, "/sync", "GET", token);
+    const doctorsResp = await apiRequest<{ doctors: typeof defaultDoctorDirectory }>(
+      normalizedBase,
+      "/doctors",
+      "GET",
+      token,
+    );
+    const serverData = fromSyncPayload(sync.payload, normalizedBase);
+    setData({
+      ...serverData,
+      users: [{ ...me.user }],
+      sessionMobile: me.user.mobile,
+    });
+    setCurrentUser(me.user);
+    setAuthToken(token);
+    setDoctors(doctorsResp.doctors?.length ? doctorsResp.doctors : defaultDoctorDirectory);
+    setSyncReady(true);
+    await AsyncStorage.setItem(
+      AUTH_STORAGE_KEY,
+      JSON.stringify({
+        token,
+        apiBaseUrl: normalizedBase,
+      }),
+    );
+  };
 
   if (isLoading) {
     return (
@@ -307,30 +515,81 @@ function App() {
     return (
       <>
         <AuthScreen
-          users={data.users}
-          onSignup={(payload) => {
-            const exists = data.users.some((u) => u.mobile === payload.mobile);
-            if (exists) {
-              Alert.alert("خطا", "این شماره موبایل قبلا ثبت‌نام شده است.");
-              return;
-            }
-            const newUser: UserAccount = {
-              id: uuid(),
-              ...payload,
-            };
+          apiBaseUrl={data.settings.apiBaseUrl}
+          isBusy={authBusy}
+          onApiBaseUrlChange={(url) =>
             setData((prev) => ({
               ...prev,
-              users: [...prev.users, newUser],
-              sessionMobile: newUser.mobile,
-            }));
-          }}
-          onLogin={(mobile, password) => {
-            const user = data.users.find((u) => u.mobile === mobile && u.password === password);
-            if (!user) {
-              Alert.alert("ورود ناموفق", "شماره موبایل یا رمز عبور صحیح نیست.");
-              return;
+              settings: {
+                ...prev.settings,
+                apiBaseUrl: url,
+              },
+            }))
+          }
+          onRequestOtp={async (mobile) => {
+            setAuthBusy(true);
+            try {
+              const resp = await apiRequest<{ otpCode: string }>(
+                data.settings.apiBaseUrl,
+                "/auth/request-otp",
+                "POST",
+                null,
+                { mobile },
+              );
+              Alert.alert("OTP ارسال شد", `کد OTP نسخه دمو: ${resp.otpCode}`);
+              return true;
+            } catch (e) {
+              const message = e instanceof Error ? e.message : "خطای نامشخص";
+              Alert.alert("خطا", message);
+              return false;
+            } finally {
+              setAuthBusy(false);
             }
-            setData((prev) => ({ ...prev, sessionMobile: mobile }));
+          }}
+          onSignup={async (payload) => {
+            setAuthBusy(true);
+            try {
+              const resp = await apiRequest<{ token: string; user: UserAccount }>(
+                data.settings.apiBaseUrl,
+                "/auth/signup",
+                "POST",
+                null,
+                payload,
+              );
+              await hydrateFromServer({
+                token: resp.token,
+                user: resp.user,
+                baseUrl: data.settings.apiBaseUrl,
+              });
+              Alert.alert("موفق", "ثبت‌نام انجام شد.");
+            } catch (e) {
+              const message = e instanceof Error ? e.message : "خطای نامشخص";
+              Alert.alert("خطا", message);
+            } finally {
+              setAuthBusy(false);
+            }
+          }}
+          onLogin={async (mobile, password) => {
+            setAuthBusy(true);
+            try {
+              const resp = await apiRequest<{ token: string; user: UserAccount }>(
+                data.settings.apiBaseUrl,
+                "/auth/login",
+                "POST",
+                null,
+                { mobile, password },
+              );
+              await hydrateFromServer({
+                token: resp.token,
+                user: resp.user,
+                baseUrl: data.settings.apiBaseUrl,
+              });
+            } catch (e) {
+              const message = e instanceof Error ? e.message : "خطای نامشخص";
+              Alert.alert("ورود ناموفق", message);
+            } finally {
+              setAuthBusy(false);
+            }
           }}
         />
         <StatusBar style="dark" />
@@ -347,7 +606,21 @@ function App() {
               {...props}
               data={data}
               currentUser={currentUser}
-              onLogout={() => setData((prev) => ({ ...prev, sessionMobile: null }))}
+              onLogout={async () => {
+                const keepBaseUrl = normalizeBaseUrl(data.settings.apiBaseUrl);
+                setCurrentUser(null);
+                setAuthToken(null);
+                setSyncReady(false);
+                setDoctors(defaultDoctorDirectory);
+                setData({
+                  ...initialData,
+                  settings: {
+                    ...initialData.settings,
+                    apiBaseUrl: keepBaseUrl,
+                  },
+                });
+                await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
+              }}
             />
           )}
         </Stack.Screen>
@@ -440,6 +713,7 @@ function App() {
               {...props}
               children={data.children}
               consultations={data.consultations}
+              doctors={doctors}
               onCreate={(consultation) =>
                 setData((prev) => ({ ...prev, consultations: [consultation, ...prev.consultations] }))
               }
@@ -474,20 +748,33 @@ function App() {
             <SettingsScreen
               {...props}
               settings={data.settings}
-              onUpdateSettings={(settings) => setData((prev) => ({ ...prev, settings }))}
-              onChangePassword={(oldPassword, newPassword) => {
-                const account = data.users.find((u) => u.mobile === currentUser.mobile);
-                if (!account || account.password !== oldPassword) {
-                  Alert.alert("خطا", "رمز قبلی صحیح نیست.");
-                  return false;
-                }
+              onUpdateSettings={(settings) =>
                 setData((prev) => ({
                   ...prev,
-                  users: prev.users.map((u) =>
-                    u.id === account.id ? { ...u, password: newPassword } : u,
-                  ),
-                }));
-                return true;
+                  settings: {
+                    ...settings,
+                    apiBaseUrl: normalizeBaseUrl(settings.apiBaseUrl),
+                  },
+                }))
+              }
+              onChangePassword={async (oldPassword, newPassword) => {
+                if (!authToken) {
+                  return false;
+                }
+                try {
+                  await apiRequest(
+                    data.settings.apiBaseUrl,
+                    "/auth/change-password",
+                    "POST",
+                    authToken,
+                    { oldPassword, newPassword },
+                  );
+                  return true;
+                } catch (e) {
+                  const message = e instanceof Error ? e.message : "خطای نامشخص";
+                  Alert.alert("خطا", message);
+                  return false;
+                }
               }}
             />
           )}
@@ -499,13 +786,25 @@ function App() {
 }
 
 function AuthScreen({
-  users,
+  apiBaseUrl,
+  isBusy,
+  onApiBaseUrlChange,
+  onRequestOtp,
   onSignup,
   onLogin,
 }: {
-  users: UserAccount[];
-  onSignup: (payload: Omit<UserAccount, "id">) => void;
-  onLogin: (mobile: string, password: string) => void;
+  apiBaseUrl: string;
+  isBusy: boolean;
+  onApiBaseUrlChange: (apiBaseUrl: string) => void;
+  onRequestOtp: (mobile: string) => Promise<boolean>;
+  onSignup: (payload: {
+    firstName: string;
+    lastName: string;
+    mobile: string;
+    password: string;
+    otpCode: string;
+  }) => Promise<void>;
+  onLogin: (mobile: string, password: string) => Promise<void>;
 }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [mobile, setMobile] = useState("");
@@ -515,25 +814,28 @@ function AuthScreen({
   const [otpCode, setOtpCode] = useState("");
   const [otpRequested, setOtpRequested] = useState(false);
 
-  const submitSignup = () => {
+  const submitSignup = async () => {
     if (!mobile || !password || !firstName || !lastName) {
       Alert.alert("ورودی ناقص", "لطفا نام، نام خانوادگی، موبایل و رمز را کامل کنید.");
       return;
     }
     if (!otpRequested) {
-      setOtpRequested(true);
-      Alert.alert("OTP ارسال شد", "برای نسخه عملیاتی نمونه، کد OTP برابر 123456 است.");
+      const ok = await onRequestOtp(mobile.trim());
+      if (ok) {
+        setOtpRequested(true);
+      }
       return;
     }
-    if (otpCode !== "123456") {
-      Alert.alert("OTP نامعتبر", "کد OTP صحیح نیست.");
+    if (!otpCode.trim()) {
+      Alert.alert("OTP نامعتبر", "کد OTP را وارد کنید.");
       return;
     }
-    onSignup({
+    await onSignup({
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       mobile: mobile.trim(),
       password,
+      otpCode: otpCode.trim(),
     });
   };
 
@@ -542,6 +844,14 @@ function AuthScreen({
       <ScrollView contentContainerStyle={styles.authScroll}>
         <Text style={styles.authTitle}>کیدک</Text>
         <Text style={styles.authSubtitle}>پایش مستمر سلامت کودکان</Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="آدرس بک‌اند (مثال: http://192.168.1.5:4000)"
+          value={apiBaseUrl}
+          onChangeText={onApiBaseUrlChange}
+          autoCapitalize="none"
+        />
 
         <View style={styles.row}>
           <Pressable
@@ -601,18 +911,28 @@ function AuthScreen({
         )}
 
         {mode === "login" ? (
-          <Pressable style={styles.primaryButton} onPress={() => onLogin(mobile.trim(), password)}>
+          <Pressable
+            style={[styles.primaryButton, isBusy && styles.disabledButton]}
+            onPress={() => {
+              void onLogin(mobile.trim(), password);
+            }}
+            disabled={isBusy}
+          >
             <Text style={styles.primaryButtonText}>ورود به برنامه</Text>
           </Pressable>
         ) : (
-          <Pressable style={styles.primaryButton} onPress={submitSignup}>
+          <Pressable
+            style={[styles.primaryButton, isBusy && styles.disabledButton]}
+            onPress={() => {
+              void submitSignup();
+            }}
+            disabled={isBusy}
+          >
             <Text style={styles.primaryButtonText}>
-              {otpRequested ? "تکمیل ثبت‌نام" : "ارسال OTP و ادامه"}
+              {isBusy ? "در حال پردازش..." : otpRequested ? "تکمیل ثبت‌نام" : "ارسال OTP و ادامه"}
             </Text>
           </Pressable>
         )}
-
-        <Text style={styles.mutedText}>تعداد کاربران ثبت‌شده روی این دستگاه: {users.length}</Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -1818,20 +2138,28 @@ function GrowthScreen({
 function ConsultationScreen({
   children,
   consultations,
+  doctors,
   onCreate,
   onUpdate,
 }: {
   children: ChildProfile[];
   consultations: ConsultationThread[];
+  doctors: { name: string; specialty: string; fee: number; rating: number }[];
   onCreate: (consultation: ConsultationThread) => void;
   onUpdate: (consultationId: string, updater: (thread: ConsultationThread) => ConsultationThread) => void;
 }) {
   const [selectedChildId, setSelectedChildId] = useState<string | null>(children[0]?.id ?? null);
-  const [selectedDoctorName, setSelectedDoctorName] = useState(doctorDirectory[0].name);
+  const [selectedDoctorName, setSelectedDoctorName] = useState<string>(doctors[0]?.name || "");
   const [summaryItems, setSummaryItems] = useState<string[]>([]);
   const [messageText, setMessageText] = useState("");
   const [activeConsultationId, setActiveConsultationId] = useState<string | null>(null);
   const [chatText, setChatText] = useState("");
+
+  useEffect(() => {
+    if (!selectedDoctorName && doctors[0]?.name) {
+      setSelectedDoctorName(doctors[0].name);
+    }
+  }, [doctors, selectedDoctorName]);
 
   const summaryOptions = [
     "سابقه تب 24 ساعت گذشته",
@@ -1852,8 +2180,9 @@ function ConsultationScreen({
       Alert.alert("انتخاب کودک", "لطفا کودک را انتخاب کنید.");
       return;
     }
-    const doctor = doctorDirectory.find((d) => d.name === selectedDoctorName);
+    const doctor = doctors.find((d) => d.name === selectedDoctorName);
     if (!doctor) {
+      Alert.alert("پزشک", "لطفا پزشک را انتخاب کنید.");
       return;
     }
     const consultation: ConsultationThread = {
@@ -1959,7 +2288,7 @@ function ConsultationScreen({
 
             <Text style={styles.label}>پزشک</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalList}>
-              {doctorDirectory.map((doc) => (
+              {doctors.map((doc) => (
                 <Pressable
                   key={doc.name}
                   style={[styles.tag, selectedDoctorName === doc.name && styles.tagActive]}
@@ -2195,7 +2524,7 @@ function SettingsScreen({
 }: {
   settings: AppSettings;
   onUpdateSettings: (settings: AppSettings) => void;
-  onChangePassword: (oldPassword: string, newPassword: string) => boolean;
+  onChangePassword: (oldPassword: string, newPassword: string) => Promise<boolean>;
 }) {
   const [oldPass, setOldPass] = useState("");
   const [newPass, setNewPass] = useState("");
@@ -2214,7 +2543,7 @@ function SettingsScreen({
     });
   };
 
-  const changePassword = () => {
+  const changePassword = async () => {
     if (!oldPass || !newPass) {
       Alert.alert("ورودی ناقص", "رمز قبلی و جدید را وارد کنید.");
       return;
@@ -2223,7 +2552,7 @@ function SettingsScreen({
       Alert.alert("رمز ضعیف", "رمز جدید باید حداقل ۴ کاراکتر باشد.");
       return;
     }
-    const ok = onChangePassword(oldPass, newPass);
+    const ok = await onChangePassword(oldPass, newPass);
     if (ok) {
       Alert.alert("موفق", "رمز عبور با موفقیت تغییر یافت.");
       setOldPass("");
@@ -2236,6 +2565,19 @@ function SettingsScreen({
       <ScrollView contentContainerStyle={styles.pageContent}>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>یادآوری‌ها</Text>
+          <Text style={styles.cardItem}>آدرس بک‌اند: {normalizeBaseUrl(settings.apiBaseUrl)}</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="آدرس بک‌اند"
+            value={settings.apiBaseUrl}
+            onChangeText={(value) =>
+              onUpdateSettings({
+                ...settings,
+                apiBaseUrl: value,
+              })
+            }
+            autoCapitalize="none"
+          />
           <Text style={styles.cardItem}>
             اعلان‌ها: {settings.notificationsEnabled ? "روشن" : "خاموش"}
           </Text>
@@ -2281,7 +2623,12 @@ function SettingsScreen({
             value={newPass}
             onChangeText={setNewPass}
           />
-          <Pressable style={styles.primaryButton} onPress={changePassword}>
+          <Pressable
+            style={styles.primaryButton}
+            onPress={() => {
+              void changePassword();
+            }}
+          >
             <Text style={styles.primaryButtonText}>ثبت تغییر رمز</Text>
           </Pressable>
         </View>
