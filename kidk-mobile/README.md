@@ -1,6 +1,6 @@
 # Kidk Mobile (MVP)
 
-Operational Expo/React Native mobile app for the Kidk platform.
+Operational Expo/React Native mobile app connected to a real backend API.
 
 ## Implemented modules
 
@@ -24,13 +24,34 @@ Operational Expo/React Native mobile app for the Kidk platform.
 - react-native-chart-kit + react-native-svg
 - expo-image-picker
 
-## Run locally
+## Backend first (required)
+
+```bash
+cd kidk-backend
+npm install
+cp .env.example .env
+npm run start
+```
+
+Backend default URL:
+
+- `http://localhost:4000`
+
+---
+
+## Run mobile app
 
 ```bash
 cd kidk-mobile
 npm install
 npm start
 ```
+
+Set backend URL in login screen:
+
+- Android Emulator: `http://10.0.2.2:4000`
+- iOS Simulator: `http://localhost:4000`
+- Real phone (same Wi-Fi as laptop): `http://<LAPTOP_IP>:4000`
 
 Then run on:
 
@@ -40,7 +61,6 @@ Then run on:
 
 ## Notes
 
-- This version is fully usable as an MVP with local persistence.
-- OTP and AI analysis are simulated for offline demo purposes.
-- API contract for production backend exists at:
-  - `static_files/projects/kidk/kidk_openapi.yaml`
+- OTP in demo backend is fixed: `123456`
+- Jaundice AI and BLE sensor feed are still simulated in app-side MVP logic
+- Data is persisted on backend (`kidk-backend/data/db.json`) and synced from app
